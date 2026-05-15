@@ -1,0 +1,8 @@
+{
+  "name": "Satellite Monitoring Dashboard",
+  "description": "A comprehensive dashboard for satellite data analysis including file inspection, status determination, summary visualization, charts, accident detection, and AI-powered result interpretation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
