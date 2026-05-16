@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area 
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, ReferenceLine
 } from 'recharts';
 import { Upload, AlertTriangle, CheckCircle, Box, Database, Radio, Gauge, Cpu, MapPin, Terminal, Server, Navigation, ShieldCheck, Play, Pause, RotateCcw, Camera, HardDrive, Zap } from 'lucide-react';
 import { SatelliteDataPoint, AnalysisResult } from '../types';
@@ -40,12 +40,32 @@ export default function Dashboard() {
     { key: 'attitudeError', label: 'Attitude Error (°)' },
   ];
 
+  const formatDuration = (totalSeconds: number) => {
+    const boundedSeconds = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(boundedSeconds / 3600);
+    const minutes = Math.floor((boundedSeconds % 3600) / 60);
+    const seconds = boundedSeconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
   const latestData = data[data.length - 1];
   const packetCount = data.length;
+  const missionStartTimestamp = data[0]?.timestamp ?? latestData?.timestamp ?? 0;
+  const missionElapsedSeconds = latestData ? latestData.timestamp - missionStartTimestamp : 0;
+  const packetUtc = latestData
+    ? `${new Date(latestData.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)}Z`
+    : '--';
   const lastSeenText = latestData
     ? `${result.latestPacketAge === Infinity ? '-' : result.latestPacketAge}s ago`
     : 'No packet';
   const missionPhase = latestData?.altitude > 100000 ? 'Orbit' : latestData?.altitude > 30000 ? 'Near Space' : 'Ascent/Test';
+  const adcsMode = (latestData?.attitudeError || 0) > 15 ? 'DETUMBLE' : (latestData?.attitudeError || 0) > 5 ? 'SUN SEEK' : 'NADIR LOCK';
+  const rfLinkQuality = latestData && latestData.signalStrength !== 0
+    ? Math.max(0, Math.min(100, ((latestData.signalStrength + 125) / 65) * 100))
+    : isLive ? 72 : 0;
+  const passProgress = playbackData.length
+    ? Math.min(100, (playbackIndex / playbackData.length) * 100)
+    : Math.min(100, packetCount * 2);
   const activeSignal = telemetrySignals.find(sig => sig.key === selectedSignal);
   const fullSignalValues = playbackData
     .map(point => point[selectedSignal])
@@ -53,6 +73,13 @@ export default function Dashboard() {
   const fullSignalMin = fullSignalValues.length ? Math.min(...fullSignalValues) : 0;
   const fullSignalMax = fullSignalValues.length ? Math.max(...fullSignalValues) : 0;
   const fullDatasetResult = analyzeSatelliteData(playbackData);
+  const fullDatasetChartData = playbackData.map((point, index) => ({
+    ...point,
+    playbackFrame: index + 1,
+  }));
+  const playbackCursorFrame = playbackData.length
+    ? Math.max(1, Math.min(playbackIndex || 1, playbackData.length))
+    : 0;
   const latestPacketJson = latestData ? JSON.stringify(latestData, null, 2) : 'No packet received yet';
   const pythonSnippet = `export DASHBOARD_URL="http://GROUND_STATION_IP:3000/api/telemetry"
 python3 pi_telemetry_client.py`;
@@ -71,6 +98,12 @@ python3 pi_telemetry_client.py`;
     { label: 'COMMS / UHF', value: `${(latestData?.signalStrength || 0).toFixed(1)} dBm / ${(latestData?.packetLoss || 0).toFixed(1)}% loss`, ok: (latestData?.signalStrength || 0) > -115 && (latestData?.packetLoss || 0) < 10 },
     { label: 'Payload Camera', value: latestData?.camera ? `${latestData.camera.mode.toUpperCase()} / ${latestData.camera.frameId}` : 'standby', ok: latestData?.camera?.enabled !== false },
     { label: 'TM Link / SSE', value: isLive ? 'CONNECTED' : 'DISCONNECTED', ok: isLive },
+  ];
+  const passRows = [
+    { label: 'MET', value: formatDuration(missionElapsedSeconds), tone: 'text-[#38bdf8]' },
+    { label: 'UTC', value: packetUtc, tone: 'text-[#f8fafc]' },
+    { label: 'RX QUAL', value: `${rfLinkQuality.toFixed(0)}%`, tone: rfLinkQuality > 45 ? 'text-[#22c55e]' : 'text-[#f59e0b]' },
+    { label: 'ADCS', value: adcsMode, tone: adcsMode === 'NADIR LOCK' ? 'text-[#22c55e]' : 'text-[#f59e0b]' },
   ];
 
   const appendTelemetryPoints = (points: SatelliteDataPoint[], preserveInterpretation = true) => {
@@ -224,26 +257,35 @@ python3 pi_telemetry_client.py`;
   };
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col font-sans">
+    <div className="mission-shell min-h-screen text-[#fafafa] flex flex-col font-sans">
       {/* Header */}
-      <header className="h-[64px] px-6 flex items-center justify-between border-b border-[#1f2937] bg-[#07090d] shrink-0">
+      <header className="min-h-[74px] px-6 py-3 flex items-center justify-between gap-5 border-b border-[#243244] bg-[#030712]/95 shrink-0">
         <div className="flex items-center gap-3">
-          <div className={`w-2.5 h-2.5 rounded-full ${result.status === 'NORMAL' ? 'bg-[#22c55e]' : 'bg-[#ef4444]'} shadow-[0_0_12px_currentColor]`} aria-hidden="true" />
+          <div className={`status-led ${result.status === 'NORMAL' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`} aria-hidden="true" />
           <div>
-            <h1 className="text-[15px] font-semibold tracking-[0.12em] uppercase">RaspberrySat Mission Operations Center</h1>
-            <div className="font-mono text-[10px] text-[#94a3b8]">GS-01 / PI-SAT / Telemetry, Tracking & Command</div>
+            <h1 className="text-[15px] font-semibold tracking-[0.16em] uppercase">RaspberrySat Telemetry Console</h1>
+            <div className="font-mono text-[10px] text-[#94a3b8]">GS-01 SEOUL / PI-SAT / UHF TM + PAYLOAD DOWNLINK</div>
           </div>
-          <span className="font-mono text-[11px] text-[#22c55e] bg-[#22c55e]/10 px-2 py-1 rounded-[4px] border border-[#22c55e]/20 uppercase">
+          <span className={`status-tag ${result.linkStatus === 'LIVE' ? 'bg-[#22c55e]/10 text-[#22c55e] border border-[#22c55e]/25' : 'bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/25'}`}>
             {result.linkStatus}
           </span>
         </div>
-        <div className="hidden md:flex items-center gap-4">
-          <div className="font-mono text-[11px] text-[#a1a1aa]">
-            MET: {lastSeenText} | PKT {packetCount.toString().padStart(5, '0')} | SRC {latestData?.source || 'simulator'}
+        <div className="hidden xl:grid grid-cols-4 gap-2 flex-1 max-w-[760px]">
+          {passRows.map(row => (
+            <div key={row.label} className="metric-cell px-3 py-2 font-mono">
+              <div className="text-[9px] text-[#64748b] tracking-[0.12em] uppercase">{row.label}</div>
+              <div className={`text-[11px] mt-0.5 truncate ${row.tone}`}>{row.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="hidden md:flex items-center gap-3">
+          <div className="font-mono text-[11px] text-[#a1a1aa] text-right">
+            <div>PKT {packetCount.toString().padStart(5, '0')} / SRC {latestData?.source || 'simulator'}</div>
+            <div className="text-[#64748b]">LAST {lastSeenText}</div>
           </div>
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className="bg-[#3b82f6] hover:bg-[#3b82f6]/90 text-white text-[12px] font-semibold px-4 py-1.5 rounded-[8px] transition-colors flex items-center gap-2"
+            className="bg-[#0369a1] hover:bg-[#0284c7] text-white text-[12px] font-semibold px-4 py-2 rounded-md transition-colors flex items-center gap-2 border border-[#38bdf8]/30"
           >
             <Upload size={14} /> Upload JSON
           </button>
@@ -287,16 +329,16 @@ python3 pi_telemetry_client.py`;
       </AnimatePresence>
 
       {/* Main Grid Layout */}
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[320px_minmax(520px,1fr)_420px] gap-[1px] bg-[#1f2937] overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[320px_minmax(520px,1fr)_420px] gap-[1px] bg-[#243244] overflow-hidden">
         
         {/* Left Panel: File & Accident */}
-        <aside className="bg-[#0f141d] p-5 flex flex-col gap-6 overflow-y-auto">
+        <aside className="bg-[#071019]/95 p-5 flex flex-col gap-6 overflow-y-auto">
           <div className="space-y-6">
             <section>
               <h2 className="panel-title mb-4"><ShieldCheck size={14} /> Mission Status Board</h2>
               <div className="space-y-2">
                 {healthRows.map(row => (
-                  <div key={row.label} className="bg-[#07090d] border border-[#243244] rounded-md p-3">
+                  <div key={row.label} className="metric-cell p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-[#94a3b8] font-mono uppercase">{row.label}</span>
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border rounded ${row.ok ? 'text-[#22c55e] border-[#22c55e]/30 bg-[#22c55e]/10' : 'text-[#f59e0b] border-[#f59e0b]/30 bg-[#f59e0b]/10'}`}>
@@ -311,7 +353,7 @@ python3 pi_telemetry_client.py`;
 
             <section>
               <h2 className="panel-title mb-4"><Play size={14} /> Telemetry Playback</h2>
-              <div className="bg-[#07090d] border border-[#243244] rounded-md p-3 space-y-3">
+              <div className="telemetry-panel rounded-md p-3 space-y-3">
                 <div className="flex items-center justify-between text-[11px] font-mono">
                   <span className="text-[#94a3b8]">Loaded packets</span>
                   <span className="text-[#f8fafc]">{playbackData.length}</span>
@@ -372,7 +414,7 @@ python3 pi_telemetry_client.py`;
 
             <section>
               <h2 className="panel-title mb-4"><Navigation size={14} /> Ground Link</h2>
-              <div className="bg-[#07090d] border border-[#243244] rounded-md p-3 space-y-3">
+              <div className="telemetry-panel rounded-md p-3 space-y-3">
                 <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
                   <div className="bg-black/20 p-2 rounded border border-[#1f2937]">
                     <div className="text-[#64748b]">Endpoint</div>
@@ -394,6 +436,15 @@ python3 pi_telemetry_client.py`;
                 <div className={`text-[11px] font-mono flex items-center gap-2 ${result.linkStatus === 'LIVE' ? 'text-[#22c55e]' : 'text-[#f59e0b]'}`}>
                   {result.linkStatus === 'LIVE' ? <CheckCircle size={13} /> : <AlertTriangle size={13} />}
                   Payload parser armed / SSE broadcast ready
+                </div>
+                <div>
+                  <div className="flex justify-between text-[10px] font-mono text-[#64748b] mb-1">
+                    <span>PASS PROGRESS</span>
+                    <span>{passProgress.toFixed(0)}%</span>
+                  </div>
+                  <div className="h-1.5 bg-[#020617] border border-[#243244] rounded overflow-hidden">
+                    <div className="h-full bg-[#38bdf8]" style={{ width: `${passProgress}%` }} />
+                  </div>
                 </div>
               </div>
             </section>
@@ -432,9 +483,18 @@ python3 pi_telemetry_client.py`;
         </aside>
 
         {/* Center Panel: Summary & Charts */}
-        <main className="bg-[#111827] p-5 flex flex-col gap-5 overflow-y-auto">
+        <main className="bg-[#0b1220]/96 p-5 flex flex-col gap-5 overflow-y-auto">
           <div>
-            <h2 className="panel-title mb-4">Flight Telemetry Strip</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="panel-title">Flight Telemetry Strip</h2>
+              <div className="hidden md:flex items-center gap-2 font-mono text-[10px] text-[#64748b]">
+                <span>UHF 437.125 MHz</span>
+                <span className="text-[#334155]">/</span>
+                <span>S-BAND 2.4 GHz</span>
+                <span className="text-[#334155]">/</span>
+                <span>FRAME {playbackCursorFrame || packetCount}</span>
+              </div>
+            </div>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
               {[
                 { label: 'Link Status', value: result.linkStatus, unit: '', color: result.linkStatus === 'LIVE' ? '#22c55e' : '#f59e0b', icon: Radio },
@@ -447,7 +507,7 @@ python3 pi_telemetry_client.py`;
                 { label: 'Signal', value: latestData?.signalStrength || 0, unit: ' dBm', color: (latestData?.signalStrength || 0) > -115 ? '#22c55e' : '#ef4444', icon: Radio },
                 { label: 'Packet Loss', value: latestData?.packetLoss || 0, unit: '%', color: (latestData?.packetLoss || 0) < 10 ? '#a1a1aa' : '#ef4444', icon: Server }
               ].map((stat, idx) => (
-                <div key={idx} className="bg-[#07090d] p-3 rounded-md border border-[#243244] group hover:border-[#38bdf8]/50 transition-colors">
+                <div key={idx} className="metric-cell p-3 group hover:border-[#38bdf8]/50 transition-colors">
                   <div className="text-[11px] text-[#a1a1aa] mb-1 font-medium flex items-center gap-1.5">
                     <stat.icon size={12} /> {stat.label}
                   </div>
@@ -461,7 +521,7 @@ python3 pi_telemetry_client.py`;
           </div>
 
           <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-            <section className="min-h-[430px] bg-[#07090d] rounded-md border border-[#243244] p-4 flex flex-col gap-4">
+            <section className="telemetry-panel min-h-[430px] rounded-md p-4 flex flex-col gap-4">
               <div className="flex justify-between items-center gap-3">
                 <div className="flex items-center gap-4 min-w-0">
                   <span className="text-[12px] font-medium text-[#fafafa]/80 truncate">Live Playback: {activeSignal?.label}</span>
@@ -517,10 +577,13 @@ python3 pi_telemetry_client.py`;
               </div>
             </section>
 
-            <section className="min-h-[430px] bg-[#07090d] rounded-md border border-[#243244] p-4 flex flex-col gap-4">
+            <section className="telemetry-panel min-h-[430px] rounded-md p-4 flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="panel-title">Full JSON Dataset</h2>
-                <span className="text-[10px] font-mono text-[#94a3b8]">{playbackData.length} TOTAL PACKETS</span>
+                <div className="flex items-center gap-3 text-[10px] font-mono text-[#94a3b8]">
+                  <span className="text-[#38bdf8]">CURSOR {playbackIndex}/{playbackData.length}</span>
+                  <span>{playbackData.length} TOTAL PACKETS</span>
+                </div>
               </div>
               <div className="grid grid-cols-4 gap-2 text-[11px] font-mono">
                 <div className="bg-[#111827] border border-[#243244] rounded p-2">
@@ -542,7 +605,7 @@ python3 pi_telemetry_client.py`;
               </div>
               <div className="flex-1 min-h-[220px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={playbackData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <AreaChart data={fullDatasetChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorFullDataset" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#22c55e" stopOpacity={0.22}/>
@@ -550,13 +613,30 @@ python3 pi_telemetry_client.py`;
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1f2937" />
-                    <XAxis dataKey="timestamp" hide />
+                    <XAxis dataKey="playbackFrame" type="number" domain={[1, 'dataMax']} hide />
                     <YAxis fontSize={10} fontStyle="italic" stroke="#94a3b8" axisLine={false} tickLine={false} />
                     <Tooltip 
                       contentStyle={{ backgroundColor: '#111827', border: '1px solid #243244', borderRadius: '6px', color: '#fafafa', fontFamily: 'monospace', fontSize: '11px' }}
                       itemStyle={{ color: '#22c55e' }}
                       cursor={{ stroke: '#22c55e', strokeWidth: 1 }}
+                      labelFormatter={(label) => `Frame ${label}`}
                     />
+                    {playbackData.length > 0 && (
+                      <ReferenceLine
+                        x={playbackCursorFrame}
+                        stroke="#38bdf8"
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        ifOverflow="extendDomain"
+                        label={{
+                          value: 'CURSOR',
+                          position: 'top',
+                          fill: '#38bdf8',
+                          fontSize: 10,
+                          fontFamily: 'monospace',
+                        }}
+                      />
+                    )}
                     <Area type="monotone" dataKey={selectedSignal} stroke="#22c55e" fillOpacity={1} fill="url(#colorFullDataset)" strokeWidth={2} />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -588,7 +668,7 @@ python3 pi_telemetry_client.py`;
             </section>
           </div>
 
-          <section className="bg-[#07090d] rounded-md border border-[#243244] p-4">
+          <section className="telemetry-panel rounded-md p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="panel-title"><Camera size={14} /> Body Camera Payload</h2>
               <span className={`text-[10px] font-mono px-2 py-1 rounded border ${latestData?.camera?.mode === 'offline' ? 'text-[#ef4444] border-[#ef4444]/30 bg-[#ef4444]/10' : 'text-[#22c55e] border-[#22c55e]/30 bg-[#22c55e]/10'}`}>
@@ -623,20 +703,25 @@ python3 pi_telemetry_client.py`;
             </div>
           </section>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
-            <div className="bg-[#07090d] border border-[#243244] rounded-md p-3">
-              <div className="text-[10px] font-mono text-[#64748b] uppercase">Coordinates</div>
+          <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr_1fr] gap-2">
+            <div className="metric-cell p-3">
+              <div className="text-[10px] font-mono text-[#64748b] uppercase flex items-center gap-1"><MapPin size={11} /> Subsatellite Point</div>
               <div className="font-mono text-[13px] text-[#f8fafc] mt-1">
                 {latestData && latestData.gps.satellites > 0 ? `${latestData.gps.lat.toFixed(5)}, ${latestData.gps.lng.toFixed(5)}` : 'GPS not present in SE3C log'}
               </div>
             </div>
-            <div className="bg-[#07090d] border border-[#243244] rounded-md p-3">
-              <div className="text-[10px] font-mono text-[#64748b] uppercase">Acceleration XYZ</div>
-              <div className="font-mono text-[13px] text-[#f8fafc] mt-1">
-                {latestData ? `${latestData.velocity.toFixed(2)} m/s vertical` : '-'}
+            <div className="metric-cell p-3">
+              <div className="text-[10px] font-mono text-[#64748b] uppercase">ADCS Reference</div>
+              <div className="mt-2 flex items-center gap-3">
+                <div className="attitude-sphere relative w-14 h-14 rounded-full border border-[#94a3b8]/40 overflow-hidden shrink-0" style={{ transform: `rotate(${latestData?.attitude.roll || 0}deg)` }} />
+                <div className="font-mono text-[11px] text-[#cbd5e1]">
+                  <div>PTCH {(latestData?.attitude.pitch || 0).toFixed(1)}°</div>
+                  <div>ROLL {(latestData?.attitude.roll || 0).toFixed(1)}°</div>
+                  <div>YAW {(latestData?.attitude.yaw || 0).toFixed(1)}°</div>
+                </div>
               </div>
             </div>
-            <div className="bg-[#07090d] border border-[#243244] rounded-md p-3">
+            <div className="metric-cell p-3">
               <div className="text-[10px] font-mono text-[#64748b] uppercase">Selected Signal</div>
               <div className="font-mono text-[13px] text-[#f8fafc] mt-1">
                 {latestData && typeof latestData[selectedSignal] === 'number' ? (latestData[selectedSignal] as number).toFixed(3) : '-'}
@@ -646,8 +731,8 @@ python3 pi_telemetry_client.py`;
         </main>
 
         {/* Right Panel: Debug Code Console */}
-        <aside className="bg-[#0b1018] p-5 flex flex-col gap-5 overflow-y-auto">
-          <section>
+        <aside className="bg-[#060b12]/98 p-5 flex flex-col gap-5 overflow-y-auto">
+          <section className="telemetry-panel rounded-md p-4">
             <h2 className="panel-title mb-4"><Server size={14} /> Flight Computer Debug</h2>
             <div className={`status-tag mb-3 ${result.status === 'NORMAL' ? 'bg-[#22c55e]/10 text-[#22c55e] border border-[#22c55e]/20' : 'bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/20'}`}>
               System {result.status === 'NORMAL' ? 'Healthy' : 'Compromised'}
@@ -665,23 +750,23 @@ python3 pi_telemetry_client.py`;
             )}
           </section>
 
-          <section className="flex flex-col min-h-[260px]">
+          <section className="telemetry-panel rounded-md p-4 flex flex-col min-h-[260px]">
             <h2 className="panel-title mb-4"><Terminal size={14} /> Latest Packet JSON</h2>
             <pre className="debug-code flex-1 min-h-[220px]">{latestPacketJson}</pre>
           </section>
 
-          <section>
+          <section className="telemetry-panel rounded-md p-4">
             <h2 className="panel-title mb-3"><Terminal size={14} /> Raspberry Pi Sender</h2>
             <pre className="debug-code">{pythonSnippet}</pre>
           </section>
 
-          <section>
+          <section className="telemetry-panel rounded-md p-4">
             <h2 className="panel-title mb-3"><Terminal size={14} /> Manual POST Test</h2>
             <pre className="debug-code max-h-[160px]">{curlSnippet}</pre>
             <pre className="debug-code mt-2">curl http://localhost:3000/api/health</pre>
           </section>
 
-          <section className="flex-1 flex flex-col">
+          <section className="telemetry-panel rounded-md p-4 flex-1 flex flex-col">
             <div className="flex justify-between items-center mb-4">
               <h2 className="panel-title">AI Fault Summary</h2>
               {loading && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-[#3b82f6]"></div>}
@@ -702,11 +787,11 @@ python3 pi_telemetry_client.py`;
             </div>
           </section>
 
-          <div className="mt-auto pt-4 border-t border-[#27272a]">
+          <div className="mt-auto pt-4 border-t border-[#243244]">
             <button 
               onClick={() => fetchInterpretation(data, result)}
               disabled={loading || data.length === 0}
-              className="w-full py-3 bg-[#3b82f6] hover:bg-[#3b82f6]/90 disabled:bg-[#3b82f6]/50 disabled:cursor-not-allowed rounded-lg text-[#fafafa] font-semibold text-[14px] transition-all transform active:scale-[0.98] shadow-lg shadow-[#3b82f6]/20 flex items-center justify-center gap-2"
+              className="w-full py-3 bg-[#0369a1] hover:bg-[#0284c7] disabled:bg-[#0369a1]/50 disabled:cursor-not-allowed rounded-md text-[#fafafa] font-semibold text-[14px] transition-all transform active:scale-[0.98] shadow-lg shadow-[#38bdf8]/10 border border-[#38bdf8]/30 flex items-center justify-center gap-2"
             >
               <Box size={16} /> 
               {loading ? 'Analyzing...' : 'Generate AI Report'}
